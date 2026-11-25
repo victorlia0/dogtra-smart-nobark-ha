@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+.pytest_cache/
+
+# Local BLE captures & APK extractions (may contain personal MAC addresses)
+collar_gatt_profile.json
+extracted_ble_protocol.json
+pulled_apk/
+*.apk
+*.xapk
+*.apks
+
+# OS / Editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

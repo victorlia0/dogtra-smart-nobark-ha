@@ -1,0 +1,50 @@
+{
+  "config": {
+    "flow_title": "{name} ({address})",
+    "step": {
+      "user": {
+        "title": "Connect Dogtra Smart NoBark Collar",
+        "description": "Enter the Bluetooth MAC address of your Dogtra Smart NoBark collar (you can set this up even while the collar is turned off).\n\nDiscovered BLE devices nearby: {discovered_devices}",
+        "data": {
+          "address": "Bluetooth MAC Address (e.g. AA:BB:CC:DD:EE:FF)",
+          "name": "Collar Name"
+        }
+      },
+      "bluetooth_confirm": {
+        "title": "Confirm Dogtra Smart NoBark Collar",
+        "description": "Do you want to set up **{name}** (`{address}`) in Home Assistant?",
+        "data": {
+          "name": "Collar Name"
+        }
+      }
+    },
+    "error": {
+      "invalid_mac": "Please enter a valid 6-byte Bluetooth MAC address (e.g. AA:BB:CC:DD:EE:FF)."
+    },
+    "abort": {
+      "already_configured": "This Dogtra collar is already configured."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Dogtra Smart NoBark Protocol & Polling Settings",
+        "description": "Leave UUIDs blank and byte offsets at -1 to use automatic GATT discovery and heuristic packet decoding. Once your collar connects, inspect the 'Last BLE Packet' diagnostic entity or Download Diagnostics to fine-tune offsets if needed.",
+        "data": {
+          "scan_interval": "Polling Interval (seconds)",
+          "notify_char_uuid": "Custom Notify Characteristic UUID (blank = auto-discover)",
+          "read_char_uuid": "Custom Read Characteristic UUID (blank = auto-discover)",
+          "write_char_uuid": "Custom Write Characteristic UUID (blank = auto-discover)",
+          "poll_command_hex": "Optional Status Poll Command (Hex, e.g. AA5501)",
+          "bark_byte_offset": "Bark Count Byte Offset (-1 = auto)",
+          "bark_byte_length": "Bark Count Byte Length (1, 2, or 4)",
+          "whine_byte_offset": "Whine Count Byte Offset (-1 = auto)",
+          "whine_byte_length": "Whine Count Byte Length (1, 2, or 4)",
+          "battery_byte_offset": "Battery Level Byte Offset (-1 = auto)",
+          "mode_byte_offset": "Collar Mode Byte Offset (-1 = auto)",
+          "little_endian": "Little-Endian Integer Encoding"
+        }
+      }
+    }
+  }
+}
