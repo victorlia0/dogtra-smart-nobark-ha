@@ -225,7 +225,7 @@ class DogtraDataUpdateCoordinator(DataUpdateCoordinator[DogtraCollarState]):
 
         try:
             await self.ble_client.async_reset_session(ble_device)
-        except (BleakError, TimeoutError, OSError) as err:
+        except (BleakError, TimeoutError, OSError, ValueError) as err:
             raise HomeAssistantError(
                 f"Failed to send reset command to collar: {err}"
             ) from err
@@ -252,7 +252,7 @@ class DogtraDataUpdateCoordinator(DataUpdateCoordinator[DogtraCollarState]):
 
         try:
             await self.ble_client.async_set_mode(ble_device, mode_id)
-        except (BleakError, TimeoutError, OSError) as err:
+        except (BleakError, TimeoutError, OSError, ValueError) as err:
             raise HomeAssistantError(
                 f"Failed to set collar mode to {mode_name}: {err}"
             ) from err
@@ -279,7 +279,7 @@ class DogtraDataUpdateCoordinator(DataUpdateCoordinator[DogtraCollarState]):
                 sound_level=sound_level,
                 vibration_level=vibration_level,
             )
-        except (BleakError, TimeoutError, OSError) as err:
+        except (BleakError, TimeoutError, OSError, ValueError) as err:
             raise HomeAssistantError(
                 f"Failed to update collar sensitivity: {err}"
             ) from err

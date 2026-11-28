@@ -18,6 +18,7 @@ from .const import (
     CANDIDATE_WRITE_CHAR_UUIDS,
     COLLAR_MODES,
     DOGTRA_INIT_COMMAND,
+    DOGTRA_STATUS_PACKET_LEN,
     STANDARD_SERVICE_UUIDS,
     UUID_BATTERY_LEVEL_CHAR,
     UUID_DOGTRA_STATUS_CHAR,
@@ -81,6 +82,26 @@ class DogtraBleClient:
 
         return self.state
 
+    async def _async_read_fresh_state_frame(self, client: BleakClient) -> bytes:
+        """Read a fresh 26-byte state frame from 0x2A59 or raise BleakError."""
+        status_char = client.services.get_characteristic(UUID_DOGTRA_STATUS_CHAR)
+        if not status_char or "read" not in status_char.properties:
+            raise BleakError(
+                f"Status characteristic {UUID_DOGTRA_STATUS_CHAR} is not readable on {self.state.address}"
+            )
+
+        raw = bytes(await client.read_gatt_char(status_char))
+        if len(raw) < DOGTRA_STATUS_PACKET_LEN:
+            raise BleakError(
+                f"Expected at least {DOGTRA_STATUS_PACKET_LEN}-byte state frame from "
+                f"{UUID_DOGTRA_STATUS_CHAR} on {self.state.address}, got {len(raw)} bytes"
+            )
+
+        self.decoder.decode_characteristic_payload(
+            UUID_DOGTRA_STATUS_CHAR, raw, self.state
+        )
+        return bytes(raw[:DOGTRA_STATUS_PACKET_LEN])
+
     async def async_set_mode(
         self, ble_device: BLEDevice, mode_id: int
     ) -> DogtraCollarState:
@@ -93,14 +114,9 @@ class DogtraBleClient:
                 raise BleakError(f"Not connected to Dogtra collar {self.state.address}")
 
             client = self._client
-            # Ensure we have the latest 26-byte state so we preserve all other settings
-            if self.state.last_raw_state_bytes is None:
-                status_char = client.services.get_characteristic(UUID_DOGTRA_STATUS_CHAR)
-                if status_char and "read" in status_char.properties:
-                    raw = bytes(await client.read_gatt_char(status_char))
-                    self.decoder.decode_characteristic_payload(
-                        UUID_DOGTRA_STATUS_CHAR, raw, self.state
-                    )
+            # Always read a fresh 26-byte state frame immediately before writing so
+            # we never overwrite settings changed outside Home Assistant.
+            fresh_frame = await self._async_read_fresh_state_frame(client)
 
             write_uuid = self.write_char_uuid or UUID_DOGTRA_WRITE_CHAR
             write_char = client.services.get_characteristic(write_uuid)
@@ -109,7 +125,7 @@ class DogtraBleClient:
                     f"Write characteristic {write_uuid} not found on {self.state.address}"
                 )
 
-            cmd = build_set_mode_command(mode_id, self.state.last_raw_state_bytes)
+            cmd = build_set_mode_command(mode_id, fresh_frame)
             response = "write" in write_char.properties
             _LOGGER.debug(
                 "Writing set-mode command (mode_id=%s) to %s: %s",
@@ -124,10 +140,9 @@ class DogtraBleClient:
             # the change right away instead of waiting for the next poll cycle.
             self.state.collar_mode_id = mode_id
             self.state.collar_mode = COLLAR_MODES.get(mode_id, "Count Only")
-            if self.state.last_raw_state_bytes and len(self.state.last_raw_state_bytes) >= 2:
-                patched = bytearray(self.state.last_raw_state_bytes)
-                patched[1] = mode_id & 0xFF
-                self.state.last_raw_state_bytes = bytes(patched)
+            patched = bytearray(fresh_frame)
+            patched[1] = mode_id & 0xFF
+            self.state.last_raw_state_bytes = bytes(patched)
             if self._on_state_updated:
                 self._on_state_updated(0)
 
@@ -157,13 +172,8 @@ class DogtraBleClient:
                 raise BleakError(f"Not connected to Dogtra collar {self.state.address}")
 
             client = self._client
-            if self.state.last_raw_state_bytes is None:
-                status_char = client.services.get_characteristic(UUID_DOGTRA_STATUS_CHAR)
-                if status_char and "read" in status_char.properties:
-                    raw = bytes(await client.read_gatt_char(status_char))
-                    self.decoder.decode_characteristic_payload(
-                        UUID_DOGTRA_STATUS_CHAR, raw, self.state
-                    )
+            # Always read a fresh 26-byte state frame immediately before writing
+            fresh_frame = await self._async_read_fresh_state_frame(client)
 
             write_uuid = self.write_char_uuid or UUID_DOGTRA_WRITE_CHAR
             write_char = client.services.get_characteristic(write_uuid)
@@ -173,9 +183,9 @@ class DogtraBleClient:
                 )
 
             cmd = build_set_sensitivity_command(
+                current_state_bytes=fresh_frame,
                 sound_level=sound_level,
                 vibration_level=vibration_level,
-                current_state_bytes=self.state.last_raw_state_bytes,
             )
             response = "write" in write_char.properties
             _LOGGER.debug(
@@ -189,26 +199,18 @@ class DogtraBleClient:
             await client.write_gatt_char(write_char, cmd, response=response)
 
             # Optimistically update state so Home Assistant sliders reflect the change immediately
-            patched = (
-                bytearray(self.state.last_raw_state_bytes)
-                if self.state.last_raw_state_bytes
-                and len(self.state.last_raw_state_bytes) >= 9
-                else None
-            )
+            patched = bytearray(fresh_frame)
             if sound_level is not None:
                 lvl = max(1, min(5, int(sound_level)))
                 raw_sound = AUDIO_SENSITIVITY_LEVEL_TO_RAW[lvl]
                 self.state.sound_sensitivity = lvl
                 self.state.sound_sensitivity_raw = raw_sound
-                if patched is not None:
-                    patched[7] = raw_sound
+                patched[7] = raw_sound
             if vibration_level is not None:
                 lvl = max(1, min(5, int(vibration_level)))
                 self.state.vibration_sensitivity = lvl
-                if patched is not None:
-                    patched[8] = lvl
-            if patched is not None:
-                self.state.last_raw_state_bytes = bytes(patched)
+                patched[8] = lvl
+            self.state.last_raw_state_bytes = bytes(patched)
             if self._on_state_updated:
                 self._on_state_updated(0)
 
@@ -233,13 +235,8 @@ class DogtraBleClient:
                 raise BleakError(f"Not connected to Dogtra collar {self.state.address}")
 
             client = self._client
-            if self.state.last_raw_state_bytes is None:
-                status_char = client.services.get_characteristic(UUID_DOGTRA_STATUS_CHAR)
-                if status_char and "read" in status_char.properties:
-                    raw = bytes(await client.read_gatt_char(status_char))
-                    self.decoder.decode_characteristic_payload(
-                        UUID_DOGTRA_STATUS_CHAR, raw, self.state
-                    )
+            # Always read a fresh 26-byte state frame immediately before writing
+            fresh_frame = await self._async_read_fresh_state_frame(client)
 
             write_uuid = self.write_char_uuid or UUID_DOGTRA_WRITE_CHAR
             write_char = client.services.get_characteristic(write_uuid)
@@ -248,7 +245,7 @@ class DogtraBleClient:
                     f"Write characteristic {write_uuid} not found on {self.state.address}"
                 )
 
-            cmd = build_reset_session_command(self.state.last_raw_state_bytes)
+            cmd = build_reset_session_command(fresh_frame)
             response = "write" in write_char.properties
             _LOGGER.debug(
                 "Writing reset-session command (0xB0) to %s: %s",
@@ -300,10 +297,21 @@ class DogtraBleClient:
         # Subscribe to notify/indicate characteristics
         await self._async_subscribe_notifications(client)
 
+        # Read fresh 26-byte collar state frame after every (re)connect
+        try:
+            await self._async_read_fresh_state_frame(client)
+        except (BleakError, OSError) as err:
+            _LOGGER.debug(
+                "Initial 0x2A59 state frame read after connect failed on %s: %s",
+                self.state.address,
+                err,
+            )
+
     def _handle_disconnect(self, _client: BleakClient) -> None:
         """Handle unexpected BLE disconnection."""
         _LOGGER.debug("Disconnected from Dogtra collar %s", self.state.address)
         self.state.connected = False
+        self.state.last_raw_state_bytes = None
         self._client = None
         self._subscribed_chars.clear()
         if self._on_state_updated:
@@ -544,4 +552,5 @@ class DogtraBleClient:
                     pass
             self._client = None
             self.state.connected = False
+            self.state.last_raw_state_bytes = None
             self._subscribed_chars.clear()

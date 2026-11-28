@@ -171,6 +171,14 @@ class DogtraProtocolDecoder:
 
         prev_barks = state.bark_count
 
+        # Always cache a valid 26-byte 0x2A59 state frame before any explicit-offset
+        # branch so write commands never lose access to the collar's current settings.
+        if (
+            char_uuid_lower == UUID_DOGTRA_STATUS_CHAR
+            or char_uuid_lower.startswith("00002a59-")
+        ) and len(payload) >= DOGTRA_STATUS_PACKET_LEN:
+            state.last_raw_state_bytes = bytes(payload[:DOGTRA_STATUS_PACKET_LEN])
+
         # 2. Check if user configured explicit byte offsets via Options Flow
         if self._has_explicit_offsets():
             self._apply_explicit_offsets(payload, state)
@@ -493,38 +501,44 @@ class DogtraProtocolDecoder:
         return 0
 
 
+def _require_state_frame(current_state_bytes: bytes | None) -> bytearray:
+    """Validate and copy a full 26-byte collar state frame, raising if incomplete."""
+    if (
+        not current_state_bytes
+        or len(current_state_bytes) < DOGTRA_STATUS_PACKET_LEN
+    ):
+        actual_len = len(current_state_bytes) if current_state_bytes else 0
+        raise ValueError(
+            f"Cannot build collar command without a full {DOGTRA_STATUS_PACKET_LEN}-byte "
+            f"state frame from 0x2A59 (got {actual_len} bytes)"
+        )
+    return bytearray(current_state_bytes[:DOGTRA_STATUS_PACKET_LEN])
+
+
 def build_set_mode_command(
-    mode_id: int, current_state_bytes: bytes | None = None
+    mode_id: int, current_state_bytes: bytes
 ) -> bytes:
     """Build a 26-byte Mode update packet for GATT 0x2A58.
 
     Preserves all existing collar settings (levels, sensitivities, flags) from
-    the most recent 0x2A59 state packet while setting Byte 0 = 0x02 (Mode) and
+    the freshly read 0x2A59 state packet while setting Byte 0 = 0x02 (Mode) and
     Byte 1 = mode_id.
     """
-    if current_state_bytes and len(current_state_bytes) >= DOGTRA_STATUS_PACKET_LEN:
-        buf = bytearray(current_state_bytes[:DOGTRA_STATUS_PACKET_LEN])
-    else:
-        buf = bytearray(DOGTRA_STATUS_PACKET_LEN)
-
+    buf = _require_state_frame(current_state_bytes)
     buf[0] = INSTRUCTION_SET_MODE
     buf[1] = mode_id & 0xFF
     return bytes(buf)
 
 
 def build_reset_session_command(
-    current_state_bytes: bytes | None = None,
+    current_state_bytes: bytes,
 ) -> bytes:
     """Build a 26-byte Reset Device Time / Session packet (0xB0) for GATT 0x2A58.
 
     Preserves all collar settings (bytes 1..15) while setting Byte 0 = 0xB0
     and clearing the active time & session totals (bytes 16..25).
     """
-    if current_state_bytes and len(current_state_bytes) >= DOGTRA_STATUS_PACKET_LEN:
-        buf = bytearray(current_state_bytes[:DOGTRA_STATUS_PACKET_LEN])
-    else:
-        buf = bytearray(DOGTRA_STATUS_PACKET_LEN)
-
+    buf = _require_state_frame(current_state_bytes)
     buf[0] = INSTRUCTION_RESET_DEVICE_TIME
     for i in range(16, DOGTRA_STATUS_PACKET_LEN):
         buf[i] = 0
@@ -532,20 +546,16 @@ def build_reset_session_command(
 
 
 def build_set_sensitivity_command(
+    current_state_bytes: bytes,
     sound_level: int | None = None,
     vibration_level: int | None = None,
-    current_state_bytes: bytes | None = None,
 ) -> bytes:
     """Build a 26-byte Update Sensitivity packet (0xB5) for GATT 0x2A58.
 
     Preserves all existing collar settings while updating Byte 7 (Volume/Audio
     Sensitivity, 1..5 -> 0x06..0x16) and/or Byte 8 (Vibration Sensitivity, 1..5).
     """
-    if current_state_bytes and len(current_state_bytes) >= DOGTRA_STATUS_PACKET_LEN:
-        buf = bytearray(current_state_bytes[:DOGTRA_STATUS_PACKET_LEN])
-    else:
-        buf = bytearray(DOGTRA_STATUS_PACKET_LEN)
-
+    buf = _require_state_frame(current_state_bytes)
     buf[0] = INSTRUCTION_UPDATE_SENSITIVITY
     if sound_level is not None:
         clamped_sound = max(1, min(5, int(sound_level)))

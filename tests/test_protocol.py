@@ -149,7 +149,9 @@ class TestDogtraProtocolDecoder(unittest.TestCase):
             "010500010164640e04000000000000ef02233400000500000001"
         )
         # Update volume sensitivity from 3 (0x0E) -> 5 (0x16), keep vibration = 4
-        cmd_vol = build_set_sensitivity_command(sound_level=5, current_state_bytes=current)
+        cmd_vol = build_set_sensitivity_command(
+            current_state_bytes=current, sound_level=5
+        )
         self.assertEqual(len(cmd_vol), 26)
         self.assertEqual(cmd_vol[0], 0xB5)
         self.assertEqual(cmd_vol[7], 0x16)
@@ -157,10 +159,31 @@ class TestDogtraProtocolDecoder(unittest.TestCase):
         self.assertEqual(cmd_vol[1:7], current[1:7])
 
         # Update vibration sensitivity from 4 -> 2, keep volume = 3 (0x0E)
-        cmd_vib = build_set_sensitivity_command(vibration_level=2, current_state_bytes=current)
+        cmd_vib = build_set_sensitivity_command(
+            current_state_bytes=current, vibration_level=2
+        )
         self.assertEqual(cmd_vib[0], 0xB5)
         self.assertEqual(cmd_vib[7], 0x0E)
         self.assertEqual(cmd_vib[8], 0x02)
+
+    def test_build_commands_reject_missing_or_short_state_frame(self) -> None:
+        for bad_frame in (b"", b"\x01" * 10, b"\x01" * 25):
+            with self.assertRaises(ValueError):
+                build_set_mode_command(2, bad_frame)
+            with self.assertRaises(ValueError):
+                build_reset_session_command(bad_frame)
+            with self.assertRaises(ValueError):
+                build_set_sensitivity_command(bad_frame, sound_level=3)
+
+    def test_explicit_offsets_still_caches_26b_state_frame(self) -> None:
+        config = ParserConfig(bark_byte_offset=20, bark_byte_length=2, little_endian=False)
+        state = DogtraCollarState(address="FD:23:3C:AF:AF:F8")
+        decoder = DogtraProtocolDecoder(config)
+
+        raw = bytes.fromhex("010500010164640e04000000000000ef02233400000500000001")
+        decoder.decode_characteristic_payload(UUID_DOGTRA_STATUS_CHAR, raw, state)
+        self.assertEqual(state.bark_count, 5)
+        self.assertEqual(state.last_raw_state_bytes, raw)
 
     def test_historic_bark_count_survives_resets(self) -> None:
         state = DogtraCollarState(address="FD:23:3C:AF:AF:F8")
